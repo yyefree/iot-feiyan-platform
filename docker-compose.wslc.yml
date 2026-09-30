@@ -1,0 +1,253 @@
+# IoT飞燕平台 - WSLC (Windows Subsystem for Linux Containers) 配置
+# 基于 WSL2 + Docker Desktop 的容器化部署方案
+
+version: '3.8'
+
+services:
+  postgres:
+    image: docker.1ms.run/library/postgres:16-alpine
+    container_name: iot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: iot_admin
+      POSTGRES_PASSWORD: iot_admin_2024
+      POSTGRES_DB: iot_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init/sql:/docker-entrypoint-initdb.d
+    networks:
+      - iot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iot_admin -d iot_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: docker.1ms.run/library/redis:7-alpine
+    container_name: iot-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass iot_redis_2024
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - iot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "iot_redis_2024", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  influxdb:
+    image: docker.1ms.run/library/influxdb:2-alpine
+    container_name: iot-influxdb
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: iot_admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: iot_influx_2024
+      DOCKER_INFLUXDB_INIT_ORG: iot_platform
+      DOCKER_INFLUXDB_INIT_BUCKET: telemetry
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    networks:
+      - iot-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8086/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  emqx:
+    image: docker.1ms.run/emqx/emqx:5.7.1
+    container_name: iot-emqx
+    restart: unless-stopped
+    environment:
+      EMQX_NAME: iot_emqx
+      EMQX_HOST: iot-emqx
+    ports:
+      - "18083:18083"
+      - "1883:1883"
+      - "18084:8083"
+    volumes:
+      - emqx_data:/opt/emqx/data
+    networks:
+      - iot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18083/api/v5/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ========== Rust 微服务 ==========
+  
+  api-gateway:
+    build:
+      context: ./rust-services/gateway
+      dockerfile: Dockerfile
+    container_name: iot-api-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  device-service:
+    build:
+      context: ./rust-services/device-service
+      dockerfile: Dockerfile
+    container_name: iot-device-service
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  product-service:
+    build:
+      context: ./rust-services/product-service
+      dockerfile: Dockerfile
+    container_name: iot-product-service
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  rule-service:
+    build:
+      context: ./rust-services/rule-service
+      dockerfile: Dockerfile
+    container_name: iot-rule-service
+    restart: unless-stopped
+    ports:
+      - "8083:8083"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  data-service:
+    build:
+      context: ./rust-services/data-service
+      dockerfile: Dockerfile
+    container_name: iot-data-service
+    restart: unless-stopped
+    ports:
+      - "8084:8084"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - INFLUXDB_HOST=iot-influxdb
+      - INFLUXDB_PORT=8086
+      - HOST=0.0.0.0
+      - PORT=8084
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  ops-service:
+    build:
+      context: ./rust-services/ops-service
+      dockerfile: Dockerfile
+    container_name: iot-ops-service
+    restart: unless-stopped
+    ports:
+      - "8085:8085"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8085
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  web-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: iot-web-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+    networks:
+      - iot-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  influxdb_data:
+  emqx_data:
+
+networks:
+  iot-network:
+    driver: bridge

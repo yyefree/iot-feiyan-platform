@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "device-service",
+    "product-service",
+    "rule-service",
+    "data-service",
+    "ops-service",
+    "gateway",
+    "common"
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+panic = "abort"

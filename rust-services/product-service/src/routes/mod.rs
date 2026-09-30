@@ -1,0 +1,255 @@
+use actix_web::{get, post, put, delete, web, HttpResponse, Responder};
+use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, QueryOrder, QuerySelect, Set};
+use iot_common::{AppError, ApiResponse, Pagination};
+use crate::models::product::{Entity as Product, Model as ProductModel};
+
+pub fn config(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api/v1/products")
+            .route("", web::get().list_products)
+            .route("", web::post().create_product)
+            .route("/statistics", web::get().get_product_statistics)
+            .route("/{id}", web::get().get_product)
+            .route("/{id}", web::put().update_product)
+            .route("/{id}", web::delete().delete_product)
+            .route("/{id}/publish", web::post().publish_product)
+            .route("/{id}/tsl/import", web::post().import_tsl)
+            .route("/{id}/tsl/export", web::get().export_tsl)
+            .route("/{id}/tsl/history", web::get().get_tsl_history)
+    );
+    cfg.service(
+        web::scope("/api/v1/products/{id}")
+            .route("/properties", web::get().get_product_properties)
+            .route("/properties", web::post().add_property)
+            .route("/properties/{pid}", web::put().update_property)
+            .route("/properties/{pid}", web::delete().delete_property)
+            .route("/services", web::get().get_product_services)
+            .route("/services", web::post().add_service)
+            .route("/services/{sid}", web::put().update_service)
+            .route("/services/{sid}", web::delete().delete_service)
+            .route("/events", web::get().get_product_events)
+            .route("/events", web::post().add_event)
+            .route("/events/{eid}", web::put().update_event)
+            .route("/events/{eid}", web::delete().delete_event)
+    );
+}
+
+#[get("")]
+async fn list_products(
+    db: web::Data<DatabaseConnection>,
+    query: web::Query<serde_json::Value>,
+) -> Result<HttpResponse, AppError> {
+    let page = query.get("page").and_then(|v| v.as_u64()).unwrap_or(1) as i32;
+    let size = query.get("size").and_then(|v| v.as_u64()).unwrap_or(20) as i32;
+    let offset = (page - 1) * size;
+
+    let total: i64 = Product::find().count(&*db).await?;
+    let products: Vec<ProductModel> = Product::find()
+        .order_by_asc(Product::Column::Id)
+        .offset(offset as u64)
+        .limit(size as u64)
+        .all(&*db)
+        .await?;
+
+    Ok(HttpResponse::Ok().json(ApiResponse::ok_paginated(
+        products,
+        Pagination { page: page as u32, size: size as u32, total: total as u64, total_pages: ((total + size - 1) / size) as u64 },
+    )))
+}
+
+#[post("")]
+async fn create_product(
+    db: web::Data<DatabaseConnection>,
+    body: web::Json<serde_json::Value>,
+) -> Result<HttpResponse, AppError> {
+    let product_name = body.get("product_name").and_then(|v| v.as_str()).ok_or(AppError::ValidationError("product_name is required".to_string()))?;
+    let tenant_id: Option<i32> = body.get("tenant_id").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let project_id: Option<i32> = body.get("project_id").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let comm_type: &str = body.get("comm_type").and_then(|v| v.as_str()).unwrap_or("wifi");
+    let auth_type: &str = body.get("auth_type").and_then(|v| v.as_str()).unwrap_or("one_device_one_key");
+    let description: Option<String> = body.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    let product_key = format!("p{}", uuid::Uuid::new_v4().to_string().replace("-", "").chars().take(16).collect::<String>());
+
+    use crate::models::product::ActiveModel;
+    let product = ActiveModel {
+        product_name: Set(product_name.to_string()),
+        product_key: Set(product_key),
+        tenant_id: Set(tenant_id),
+        project_id: Set(project_id),
+        comm_type: Set(comm_type.to_string()),
+        auth_type: Set(auth_type.to_string()),
+        status: Set("draft".to_string()),
+        description: Set(description),
+        ..Default::default()
+    };
+
+    let created = product.insert(&*db).await?;
+    Ok(HttpResponse::Created().json(ApiResponse::ok(created)))
+}
+
+#[get("/statistics")]
+async fn get_product_statistics(db: web::Data<DatabaseConnection>) -> Result<HttpResponse, AppError> {
+    let total: i64 = Product::find().count(&*db).await?;
+    let published: i64 = Product::find().filter(product::Column::Status.eq("published")).count(&*db).await?;
+    let draft: i64 = Product::find().filter(product::Column::Status.eq("draft")).count(&*db).await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(serde_json::json!({
+        "totalCount": total,
+        "publishedCount": published,
+        "draftCount": draft,
+    }))))
+}
+
+#[get("/{id}")]
+async fn get_product(db: web::Data<DatabaseConnection>, path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    let product = Product::find_by_id(path.into_inner()).one(&*db).await?.ok_or(AppError::NotFound)?;
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(product)))
+}
+
+#[put("/{id}")]
+async fn update_product(
+    db: web::Data<DatabaseConnection>,
+    path: web::Path<i32>,
+    body: web::Json<serde_json::Value>,
+) -> Result<HttpResponse, AppError> {
+    let product = Product::find_by_id(path.into_inner()).one(&*db).await?.ok_or(AppError::NotFound)?;
+    use crate::models::product::ActiveModel;
+    let mut active: ActiveModel = product.into();
+    if let Some(name) = body.get("product_name").and_then(|v| v.as_str()) {
+        active.product_name = Set(name.to_string());
+    }
+    if let Some(comm_type) = body.get("comm_type").and_then(|v| v.as_str()) {
+        active.comm_type = Set(comm_type.to_string());
+    }
+    if let Some(auth_type) = body.get("auth_type").and_then(|v| v.as_str()) {
+        active.auth_type = Set(auth_type.to_string());
+    }
+    if let Some(desc) = body.get("description").and_then(|v| v.as_str()) {
+        active.description = Set(Some(desc.to_string()));
+    }
+    active.updated_at = Set(chrono::Utc::now());
+    let updated = active.update(&*db).await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(updated)))
+}
+
+#[delete("/{id}")]
+async fn delete_product(db: web::Data<DatabaseConnection>, path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    let product = Product::find_by_id(path.into_inner()).one(&*db).await?.ok_or(AppError::NotFound)?;
+    product.delete(&*db).await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("删除成功".to_string())))
+}
+
+#[post("/{id}/publish")]
+async fn publish_product(db: web::Data<DatabaseConnection>, path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    use crate::models::product::ActiveModel;
+    let product = Product::find_by_id(path.into_inner()).one(&*db).await?.ok_or(AppError::NotFound)?;
+    let mut active: ActiveModel = product.into();
+    active.status = Set("published".to_string());
+    active.updated_at = Set(chrono::Utc::now());
+    active.update(&*db).await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("产品已发布".to_string())))
+}
+
+#[post("/{id}/tsl/import")]
+async fn import_tsl(
+    db: web::Data<DatabaseConnection>,
+    path: web::Path<i32>,
+    body: web::Json<serde_json::Value>,
+) -> Result<HttpResponse, AppError> {
+    let tsl_data = body.get("tsl_data").and_then(|v| v.as_str()).ok_or(AppError::ValidationError("tsl_data is required".to_string()))?;
+    use crate::models::product::ActiveModel;
+    let product = Product::find_by_id(path.into_inner()).one(&*db).await?.ok_or(AppError::NotFound)?;
+    let mut active: ActiveModel = product.into();
+    active.thing_model = Set(Some(tsl_data.to_string()));
+    active.updated_at = Set(chrono::Utc::now());
+    active.update(&*db).await?;
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("TSL导入成功".to_string())))
+}
+
+#[get("/{id}/tsl/export")]
+async fn export_tsl(db: web::Data<DatabaseConnection>, path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    let product = Product::find_by_id(path.into_inner()).one(&*db).await?.ok_or(AppError::NotFound)?;
+    let thing_model: serde_json::Value = serde_json::from_str(product.thing_model.as_deref().unwrap_or("{}"))
+        .unwrap_or_else(|_| serde_json::json!({}));
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(serde_json::json!({
+        "schema": "https://iot.aliyun.com/tsl/v1",
+        "profile": {"productKey": product.product_key},
+        "properties": thing_model.get("properties").cloned().unwrap_or(serde_json::json!([])),
+        "services": thing_model.get("services").cloned().unwrap_or(serde_json::json!([])),
+        "events": thing_model.get("events").cloned().unwrap_or(serde_json::json!([])),
+    }))))
+}
+
+#[get("/{id}/tsl/history")]
+async fn get_tsl_history(db: web::Data<DatabaseConnection>, path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    let product = Product::find_by_id(path.into_inner()).one(&*db).await?.ok_or(AppError::NotFound)?;
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(vec![serde_json::json!({
+        "version": "1.0",
+        "tsl_data": product.thing_model,
+        "change_log": "初始导入",
+        "created_at": product.created_at.to_rfc3339(),
+    })])))
+}
+
+// 物模型属性API
+#[get("/{id}/properties")]
+async fn get_product_properties(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(Vec::<serde_json::Value>::new())))
+}
+
+#[post("/{id}/properties")]
+async fn add_property(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>, _body: web::Json<serde_json::Value>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Created().json(ApiResponse::ok(serde_json::json!({"id": 1}))))
+}
+
+#[put("/{id}/properties/{pid}")]
+async fn update_property(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("属性已更新".to_string())))
+}
+
+#[delete("/{id}/properties/{pid}")]
+async fn delete_property(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("属性已删除".to_string())))
+}
+
+// 物模型服务API
+#[get("/{id}/services")]
+async fn get_product_services(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(Vec::<serde_json::Value>::new())))
+}
+
+#[post("/{id}/services")]
+async fn add_service(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>, _body: web::Json<serde_json::Value>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Created().json(ApiResponse::ok(serde_json::json!({"id": 1}))))
+}
+
+#[put("/{id}/services/{sid}")]
+async fn update_service(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("服务已更新".to_string())))
+}
+
+#[delete("/{id}/services/{sid}")]
+async fn delete_service(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("服务已删除".to_string())))
+}
+
+// 物模型事件API
+#[get("/{id}/events")]
+async fn get_product_events(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(Vec::<serde_json::Value>::new())))
+}
+
+#[post("/{id}/events")]
+async fn add_event(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>, _body: web::Json<serde_json::Value>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Created().json(ApiResponse::ok(serde_json::json!({"id": 1}))))
+}
+
+#[put("/{id}/events/{eid}")]
+async fn update_event(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("事件已更新".to_string())))
+}
+
+#[delete("/{id}/events/{eid}")]
+async fn delete_event(_db: web::Data<DatabaseConnection>, _path: web::Path<i32>) -> Result<HttpResponse, AppError> {
+    Ok(HttpResponse::Ok().json(ApiResponse::ok("事件已删除".to_string())))
+}

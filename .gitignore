@@ -1,0 +1,53 @@
+# Rust
+target/
+**/target/
+rust-services/target/
+rust-services/Cargo.lock
+
+# Go
+**/services/*/*.exe
+**/services/*/go.sum
+**/gateway/*.exe
+**/gateway/go.sum
+
+# Docker
+.docker/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.classpath
+.factorypath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.env.local
+
+# Logs
+*.log
+logs/
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+frontend/build/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Test data
+*.json
