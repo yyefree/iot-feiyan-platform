@@ -23,8 +23,8 @@
         </el-form-item>
       </el-form>
       <el-table :data="tableData" v-loading="loading" stripe>
-        <el-table-column prop="deviceName" label="设备名称" />
-        <el-table-column prop="productId" label="产品ID" width="100" />
+        <el-table-column prop="device_name" label="设备名称" />
+        <el-table-column prop="product_id" label="产品ID" width="100" />
         <el-table-column prop="status" label="状态" width="80">
           <template #default="{ row }">
             <el-tag :type="row.online ? 'success' : 'danger'" size="small">
@@ -32,9 +32,9 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="firmwareVersion" label="固件版本" width="120" />
-        <el-table-column prop="ipAddress" label="IP地址" width="140" />
-        <el-table-column prop="lastOnlineAt" label="最后在线" width="170" />
+        <el-table-column prop="firmware_version" label="固件版本" width="120" />
+        <el-table-column prop="ip_address" label="IP地址" width="140" />
+        <el-table-column prop="last_online_at" label="最后在线" width="170" />
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="handleDetail(row)">详情</el-button>
@@ -88,8 +88,21 @@ const loadData = async () => {
       size: pagination.value.size,
       status: searchForm.value.status
     })
-    tableData.value = res.content || []
-    pagination.value.total = res.totalElements || 0
+    console.log('Device list response:', res)
+    // Handle both formats: { data: [...], pagination: {...} } and { content: [...], totalElements: number }
+    if (res.data && Array.isArray(res.data)) {
+      tableData.value = res.data
+      pagination.value.total = res.pagination?.total || res.data.length
+    } else if (res.content) {
+      tableData.value = res.content
+      pagination.value.total = res.totalElements || 0
+    } else {
+      tableData.value = []
+      pagination.value.total = 0
+    }
+  } catch (error: any) {
+    console.error('Failed to load devices:', error)
+    ElMessage.error('加载设备列表失败: ' + (error.message || '未知错误'))
   } finally {
     loading.value = false
   }
@@ -119,7 +132,7 @@ const handleDelete = (id: number) => {
 }
 
 const handleDetail = (row: any) => {
-  ElMessage.info(`设备: ${row.deviceName}`)
+  ElMessage.info(`设备: ${row.device_name || row.deviceName}`)
 }
 
 onMounted(loadData)
