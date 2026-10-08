@@ -2,7 +2,6 @@ services:
   postgres:
     image: docker.1ms.run/library/postgres:16-alpine
     container_name: iot-postgres
-    restart: unless-stopped
     environment:
       POSTGRES_USER: iot_admin
       POSTGRES_PASSWORD: iot_admin_2024
@@ -11,9 +10,6 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init/sql:/docker-entrypoint-initdb.d
-    networks:
-      - iot-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U iot_admin -d iot_platform"]
       interval: 10s
@@ -23,16 +19,24 @@ services:
   redis:
     image: docker.1ms.run/library/redis:7-alpine
     container_name: iot-redis
-    restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass iot_redis_2024
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    networks:
-      - iot-network
+
+  emqx:
+    image: docker.1ms.run/emqx/emqx:5.7.1
+    container_name: iot-emqx
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+      - "8084:8084"
+      - "18083:18083"
+    environment:
+      EMQX_NAME: emqx-1
+      EMQX_HOST: emqx-1
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "iot_redis_2024", "ping"]
+      test: ["CMD", "epmd", "-names"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,193 +44,159 @@ services:
   influxdb:
     image: docker.1ms.run/library/influxdb:2-alpine
     container_name: iot-influxdb
-    restart: unless-stopped
-    environment:
-      DOCKER_INFLUXDB_INIT_MODE: setup
-      DOCKER_INFLUXDB_INIT_USERNAME: iot_admin
-      DOCKER_INFLUXDB_INIT_PASSWORD: iot_influx_2024
-      DOCKER_INFLUXDB_INIT_ORG: iot_platform
-      DOCKER_INFLUXDB_INIT_BUCKET: telemetry
     ports:
       - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin123
+      DOCKER_INFLUXDB_INIT_ORG: iot-org
+      DOCKER_INFLUXDB_INIT_BUCKET: iot-bucket
     volumes:
       - influxdb_data:/var/lib/influxdb2
-    networks:
-      - iot-network
+
+  api-gateway:
+    image: test-api-gateway:latest
+    container_name: iot-api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      DEVICE_ADDR: http://device-service:8081
+      PRODUCT_ADDR: http://product-service:8082
+      RULE_ADDR: http://rule-service:8093
+      DATA_ADDR: http://data-service:8084
+      OPS_ADDR: http://ops-service:8085
+      OTA_ADDR: http://ota-service:8088
+      VOICE_ADDR: http://voice-service:8089
+    depends_on:
+      - device-service
+      - product-service
+      - rule-service
+      - data-service
+      - ops-service
+      - ota-service
+      - voice-service
+
+  device-service:
+    image: test-device-service:latest
+    container_name: iot-device-service
+    ports:
+      - "8081:8081"
+    environment:
+      DATABASE_URL: postgres://iot_admin:iot_admin_2024@postgres:5432/iot_platform?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: 8081
+    depends_on:
+      - postgres
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8086/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  emqx:
-    image: docker.1ms.run/emqx/emqx:5.7.1
-    container_name: iot-emqx
-    restart: unless-stopped
-    environment:
-      EMQX_NAME: iot_emqx
-      EMQX_HOST: iot-emqx
-    ports:
-      - "18083:18083"
-      - "1883:1883"
-      - "18084:8083"
-    volumes:
-      - emqx_data:/opt/emqx/data
-    networks:
-      - iot-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:18083/api/v5/status"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  api-gateway:
-    build:
-      context: ./gateway
-      dockerfile: Dockerfile
-    container_name: iot-api-gateway
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      - DEVICE_ADDR=http://iot-device-service:8081
-      - PRODUCT_ADDR=http://iot-product-service:8082
-      - RULE_ADDR=http://iot-rule-service:8083
-      - DATA_ADDR=http://iot-data-service:8084
-      - OPS_ADDR=http://iot-ops-service:8085
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      emqx:
-        condition: service_healthy
-    networks:
-      - iot-network
-
-  device-service:
-    build:
-      context: ./services/device-service
-      dockerfile: Dockerfile
-    container_name: iot-device-service
-    restart: unless-stopped
-    ports:
-      - "8081:8081"
-    environment:
-      - POSTGRES_HOST=iot-postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=iot_platform
-      - POSTGRES_USER=iot_admin
-      - POSTGRES_PASSWORD=iot_admin_2024
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - iot-network
-
   product-service:
-    build:
-      context: ./services/product-service
-      dockerfile: Dockerfile
+    image: test-product-service:latest
     container_name: iot-product-service
-    restart: unless-stopped
     ports:
       - "8082:8082"
     environment:
-      - POSTGRES_HOST=iot-postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=iot_platform
-      - POSTGRES_USER=iot_admin
-      - POSTGRES_PASSWORD=iot_admin_2024
+      DATABASE_URL: postgres://iot_admin:iot_admin_2024@postgres:5432/iot_platform?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: 8082
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - iot-network
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   rule-service:
-    build:
-      context: ./services/rule-service
-      dockerfile: Dockerfile
+    image: test-rule-service:latest
     container_name: iot-rule-service
-    restart: unless-stopped
     ports:
-      - "8093:8083"
+      - "8093:8093"
     environment:
-      - POSTGRES_HOST=iot-postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=iot_platform
-      - POSTGRES_USER=iot_admin
-      - POSTGRES_PASSWORD=iot_admin_2024
+      DATABASE_URL: postgres://iot_admin:iot_admin_2024@postgres:5432/iot_platform?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: 8093
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - iot-network
-
-  ops-service:
-    build:
-      context: ./services/ops-service
-      dockerfile: Dockerfile
-    container_name: iot-ops-service
-    restart: unless-stopped
-    ports:
-      - "8085:8085"
-    environment:
-      - POSTGRES_HOST=iot-postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=iot_platform
-      - POSTGRES_USER=iot_admin
-      - POSTGRES_PASSWORD=iot_admin_2024
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - iot-network
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8093/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   data-service:
-    build:
-      context: ./services/data-service
-      dockerfile: Dockerfile
+    image: test-data-service:latest
     container_name: iot-data-service
-    restart: unless-stopped
     ports:
       - "8084:8084"
     environment:
-      - POSTGRES_HOST=iot-postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=iot_platform
-      - POSTGRES_USER=iot_admin
-      - POSTGRES_PASSWORD=iot_admin_2024
-      - INFLUXDB_HOST=iot-influxdb
-      - INFLUXDB_PORT=8086
+      DATABASE_URL: postgres://iot_admin:iot_admin_2024@postgres:5432/iot_platform?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: 8084
     depends_on:
-      postgres:
-        condition: service_healthy
-      influxdb:
-        condition: service_healthy
-    networks:
-      - iot-network
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  web-frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: iot-web-frontend
-    restart: unless-stopped
+  ops-service:
+    image: test-ops-service:latest
+    container_name: iot-ops-service
     ports:
-      - "3000:80"
+      - "8085:8085"
+    environment:
+      DATABASE_URL: postgres://iot_admin:iot_admin_2024@postgres:5432/iot_platform?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: 8085
     depends_on:
-      - api-gateway
-    networks:
-      - iot-network
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ota-service:
+    image: ota-service:latest
+    container_name: iot-ota-service
+    ports:
+      - "8088:8088"
+    environment:
+      DATABASE_URL: postgres://iot_admin:iot_admin_2024@postgres:5432/iot_platform?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: 8086
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  voice-service:
+    image: voice-service:latest
+    container_name: iot-voice-service
+    ports:
+      - "8089:8089"
+    environment:
+      DATABASE_URL: postgres://iot_admin:iot_admin_2024@postgres:5432/iot_platform?sslmode=disable
+      HOST: 0.0.0.0
+      PORT: 8087
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
   redis_data:
   influxdb_data:
-  emqx_data:
-
-networks:
-  iot-network:
-    driver: bridge

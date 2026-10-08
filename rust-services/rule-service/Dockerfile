@@ -1,16 +1,16 @@
-FROM docker.1ms.run/library/rust:1.75-alpine AS builder
+FROM rust:1.85-alpine AS builder
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
 COPY common/ common/
 COPY rule-service/ rule-service/
 
-RUN cargo build --release --package iot-rule-service
+WORKDIR /app/rule-service
+RUN cargo build --release
 
-FROM docker.1ms.run/library/alpine:3.19
+FROM alpine:3.19
 RUN apk add --no-cache ca-certificates tzdata
 ENV TZ=Asia/Shanghai
 WORKDIR /app
-COPY --from=builder /app/target/release/iot-rule-service .
+COPY --from=builder /app/rule-service/target/release/iot-rule-service .
 EXPOSE 8083
 ENTRYPOINT ["./iot-rule-service"]

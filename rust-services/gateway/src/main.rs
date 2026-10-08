@@ -3,13 +3,12 @@ use actix_cors::Cors;
 use std::env;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use http_body_util::{BodyExt, Full};
+use tracing_subscriber::{fmt, prelude::*};
+use http_body_util::Full;
 use hyper::Uri;
-use hyper_util::client::legacy::{connect::Connect, Client};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use bytes::Bytes;
-
 mod routes;
 
 /// 后端服务地址映射
@@ -43,7 +42,6 @@ impl BackendMap {
 async fn main() -> std::io::Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(std::io::stderr))
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
     dotenvy::dotenv().ok();
@@ -51,8 +49,8 @@ async fn main() -> std::io::Result<()> {
     let backends = Arc::new(BackendMap::new());
     backends.insert("/api/v1/devices", &env::var("DEVICE_ADDR").unwrap_or_else(|_| "http://localhost:8081".to_string())).await;
     backends.insert("/api/v1/products", &env::var("PRODUCT_ADDR").unwrap_or_else(|_| "http://localhost:8082".to_string())).await;
-    backends.insert("/api/v1/rules", &env::var("RULE_ADDR").unwrap_or_else(|_| "http://localhost:8083".to_string())).await;
-    backends.insert("/api/v1/scenes", &env::var("RULE_ADDR").unwrap_or_else(|_| "http://localhost:8083".to_string())).await;
+    backends.insert("/api/v1/rules", &env::var("RULE_ADDR").unwrap_or_else(|_| "http://localhost:8093".to_string())).await;
+    backends.insert("/api/v1/scenes", &env::var("RULE_ADDR").unwrap_or_else(|_| "http://localhost:8093".to_string())).await;
     backends.insert("/api/v1/data", &env::var("DATA_ADDR").unwrap_or_else(|_| "http://localhost:8084".to_string())).await;
     backends.insert("/api/v1/ops", &env::var("OPS_ADDR").unwrap_or_else(|_| "http://localhost:8085".to_string())).await;
     backends.insert("/api/v1/push", &env::var("OPS_ADDR").unwrap_or_else(|_| "http://localhost:8085".to_string())).await;
@@ -69,7 +67,6 @@ async fn main() -> std::io::Result<()> {
             .allow_any_method()
             .allow_any_header()
             .max_age(3600);
-
         App::new()
             .app_data(web::Data::new(backends.clone()))
             .wrap(cors)
@@ -134,14 +131,10 @@ async fn proxy(
 
     // 使用 hyper 客户端转发
     let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build_http();
-
     let hyper_req = hyper::Request::builder()
         .method(method)
         .uri(new_uri)
         .header("host", new_uri.host().unwrap_or("localhost"))
-        .header("x-forwarded-for", req.header("x-forwarded-for").map(|h| h.to_str().unwrap_or("")).unwrap_or(""))
-        .header("x-real-ip", req.header("x-real-ip").map(|h| h.to_str().unwrap_or("")).unwrap_or(""))
-        .header("content-type", req.header("content-type").map(|h| h.to_str().unwrap_or("application/json")).unwrap_or("application/json"))
         .body(Full::new(body_bytes))
         .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Failed to build request: {}", e)))?;
 

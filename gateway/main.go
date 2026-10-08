@@ -22,32 +22,39 @@ func main() {
 
 	r := gin.Default()
 
-	// Register each backend with a catch-all handler
-	for prefix, backend := range backends {
+	// Register health check
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"code": 0, "message": "ok", "service": "api-gateway"})
+	})
+
+	// Register catch-all handler for all routes
+	r.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		
+		// Find matching backend
+		var backend *url.URL
+		for prefix, url := range backends {
+			if strings.HasPrefix(path, prefix) {
+				backend = url
+				break
+			}
+		}
+		
+		if backend == nil {
+			c.JSON(404, gin.H{"code": 404, "message": "Not Found"})
+			return
+		}
+		
+		// Strip prefix and proxy
+		newPath := strings.TrimPrefix(path, backend.String())
 		proxy := httputil.NewSingleHostReverseProxy(backend)
 		originalDirector := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			originalDirector(req)
-			// Strip the prefix from the path
-			newPath := strings.TrimPrefix(req.URL.Path, prefix)
-			if newPath == "" {
-				newPath = "/"
-			}
 			req.URL.Path = newPath
 			req.Host = backend.Host
-			req.Header.Set("X-Forwarded-Prefix", prefix)
-			req.Header.Set("X-Real-IP", req.RemoteAddr)
 		}
-		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("proxy error for %s: %v", prefix, err)
-			http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		}
-		// Register all HTTP methods with catch-all
-		r.Any(prefix+"/*path", gin.WrapH(proxy))
-	}
-
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok", "service": "api-gateway"})
+		proxy.ServeHTTP(c.Writer, c.Request)
 	})
 
 	log.Printf("api-gateway starting on :8080")

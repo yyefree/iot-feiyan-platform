@@ -1,33 +1,22 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Deserialize, Serialize)]
 #[sea_orm(table_name = "operation_logs")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = true)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: i32,
-    pub tenant_id: Option<i32>,
-    pub user_id: Option<i32>,
-    #[sea_orm(not_null)]
-    pub operation: String,
-    #[sea_orm(nullable)]
-    pub module: Option<String>,
+    pub operator: Option<String>,
+    pub operator_id: Option<i32>,
+    pub module: String,
+    pub action: String,
+    pub target_type: String,
     pub target_id: Option<i32>,
-    #[sea_orm(nullable)]
-    pub target_type: Option<String>,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub request_data: Option<String>,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub response_data: Option<String>,
-    #[sea_orm(nullable)]
-    pub ip_address: Option<String>,
-    #[sea_orm(nullable)]
-    pub user_agent: Option<String>,
-    #[sea_orm(created_at)]
-    pub created_at: DateTime<Utc>,
-    #[sea_orm(updated_at)]
-    pub updated_at: DateTime<Utc>,
+    pub detail: Option<String>,
+    pub ip: Option<String>,
+    #[sea_orm(created_at, updated_at)]
+    pub created_at: DateTime,
+    pub updated_at: DateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

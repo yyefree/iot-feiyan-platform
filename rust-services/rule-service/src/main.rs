@@ -1,8 +1,8 @@
-use actix_web::{web, App, HttpServer, Result};
+use actix_web::{web, App, HttpServer, Error, HttpResponse};
 use actix_cors::Cors;
-use sea_orm::{Database, DatabaseConnection, Schema};
+use sea_orm::{Database, DatabaseConnection};
 use std::env;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{fmt, prelude::*};
 
 mod models;
 mod routes;
@@ -11,7 +11,6 @@ mod routes;
 async fn main() -> std::io::Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer().with_writer(std::io::stderr))
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
     dotenvy::dotenv().ok();
@@ -21,12 +20,8 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to database");
 
-    let schema = Schema::new(sea_orm::DatabaseBackend::Postgres);
-    use models::rule::Entity as Rule;
-    schema.create_table_from_model(Rule::default()).exec(&db).await.expect("Failed to migrate rules");
-
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port = env::var("PORT").unwrap_or_else(|_| "8083".to_string());
+    let port = env::var("PORT").unwrap_or_else(|_| "8093".to_string());
     let addr = format!("{}:{}", host, port);
 
     tracing::info!("rule-service starting on {}", addr);
@@ -36,16 +31,16 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(db.clone()))
             .wrap(cors)
-            .service(health_check)
-            .service(web::scope("").configure(routes::config))
+            .route("/health", web::get().to(health_check))
+            .configure(routes::config)
     })
     .bind(&addr)?
     .run()
     .await
 }
 
-async fn health_check() -> Result<actix_web::HttpResponse, actix_web::Error> {
-    Ok(actix_web::HttpResponse::Ok()
+async fn health_check() -> Result<HttpResponse, Error> {
+    Ok(HttpResponse::Ok()
         .insert_header(("Content-Type", "application/json"))
         .json(iot_common::ApiResponse::ok("ok".to_string())))
 }

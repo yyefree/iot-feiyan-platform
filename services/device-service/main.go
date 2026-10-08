@@ -32,34 +32,20 @@ type Device struct {
 	GroupID         uint       `json:"group_id"`
 	Tags            string     `json:"tags" gorm:"type:text"`
 	Description     string     `json:"description"`
-	IsVirtual       bool       `json:"is_virtual" gorm:"default:false"` // 虚拟设备标识
-	VirtualInterval int        `json:"virtual_interval" gorm:"default:60"` // 虚拟设备上报间隔（秒）
+	IsVirtual       bool       `json:"is_virtual" gorm:"default:false"`
+	VirtualInterval int        `json:"virtual_interval" gorm:"default:60"`
 }
 
-type DeviceShadow struct {
+type DeviceLog struct {
 	gorm.Model
-	DeviceID  uint   `json:"device_id" gorm:"uniqueIndex;index"`
-	Reported  string `json:"reported" gorm:"type:jsonb"`
-	Desired   string `json:"desired" gorm:"type:jsonb"`
-	Version   int    `json:"version" gorm:"default:1"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type DeviceGroup struct {
-	gorm.Model
-	Name          string `json:"name" gorm:"not null"`
-	ParentID      uint   `json:"parent_id"`
-	TenantID      uint   `json:"tenant_id" gorm:"index"`
-	DeviceCount   int    `json:"device_count" gorm:"default:0"`
-}
-
-type ActivationCode struct {
-	gorm.Model
-	ProductID uint   `json:"product_id" gorm:"index"`
-	Code      string `json:"code" gorm:"uniqueIndex;not null"`
-	Status    string `json:"status" gorm:"default:'unused'"`
-	UsedAt    *time.Time `json:"used_at"`
-	UsedBy    uint   `json:"used_by"`
+	DeviceID   uint      `json:"device_id" gorm:"index"`
+	TenantID   uint      `json:"tenant_id" gorm:"index"`
+	Level      string    `json:"level"` // info/warn/error
+	Message    string    `json:"message" gorm:"type:text"`
+	Module     string    `json:"module"`
+	IPAddress  string    `json:"ip_address"`
+	UserAgent  string    `json:"user_agent"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // ========== 请求结构 ==========
@@ -80,11 +66,6 @@ type BatchCreateRequest struct {
 	Prefix    string `json:"prefix"`
 }
 
-type CreateGroupRequest struct {
-	Name     string `json:"name" binding:"required"`
-	ParentID uint   `json:"parent_id"`
-}
-
 // ========== 服务初始化 ==========
 
 var db *gorm.DB
@@ -103,7 +84,7 @@ func initDB() {
 		log.Fatal("failed to connect database:", err)
 	}
 	
-	db.AutoMigrate(&Device{}, &DeviceShadow{}, &DeviceGroup{}, &ActivationCode{})
+	db.AutoMigrate(&Device{}, &DeviceLog{})
 }
 
 func main() {
@@ -127,36 +108,20 @@ func main() {
 	r.POST("/api/v1/devices/:id/disable", disableDevice)
 	r.POST("/api/v1/devices/:id/reset", resetDevice)
 	
-	// 虚拟设备API（新增）
+	// 虚拟设备API
 	r.POST("/api/v1/devices/virtual/create", createVirtualDevice)
-	r.POST("/api/v1/devices/virtual/:id/report", reportVirtualProperty)
-	r.POST("/api/v1/devices/virtual/:id/event", triggerVirtualEvent)
 	r.GET("/api/v1/devices/virtual/list", getVirtualDeviceList)
 	
 	// 设备认证API
 	r.POST("/api/v1/devices/auth", deviceAuth)
 	r.GET("/api/v1/devices/:id/credentials", getDeviceCredentials)
 	
-	// 设备影子API
-	r.GET("/api/v1/devices/:id/shadow", getDeviceShadow)
-	r.PUT("/api/v1/devices/:id/shadow", updateDeviceShadow)
-	
 	// 设备统计
 	r.GET("/api/v1/devices/statistics", getDeviceStatistics)
+	
+	// 设备日志API
 	r.GET("/api/v1/devices/:id/logs", getDeviceLogs)
-	
-	// 设备分组API
-	r.GET("/api/v1/device-groups", getDeviceGroups)
-	r.POST("/api/v1/device-groups", createDeviceGroup)
-	r.PUT("/api/v1/device-groups/:id", updateDeviceGroup)
-	r.DELETE("/api/v1/device-groups/:id", deleteDeviceGroup)
-	r.POST("/api/v1/device-groups/:id/devices", addDeviceToGroup)
-	r.DELETE("/api/v1/device-groups/:id/devices/:device_id", removeDeviceFromGroup)
-	
-	// 激活码API
-	r.GET("/api/v1/activation-codes", getActivationCodes)
-	r.POST("/api/v1/activation-codes/generate", generateActivationCodes)
-	r.DELETE("/api/v1/activation-codes/:id", deleteActivationCode)
+	r.POST("/api/v1/devices/:id/logs", createDeviceLog)
 	
 	log.Printf("device-service starting on :8081")
 	r.Run(":8081")
@@ -179,9 +144,9 @@ func getDeviceList(c *gin.Context) {
 		"code": 0,
 		"data": devices,
 		"pagination": gin.H{
-			"page": page,
-			"size": pageSize,
-			"total": total,
+			"page":       page,
+			"size":       pageSize,
+			"total":      total,
 			"totalPages": (total + int64(pageSize) - 1) / int64(pageSize),
 		},
 	})
@@ -229,11 +194,8 @@ func createDevice(c *gin.Context) {
 		return
 	}
 	
-	shadow := DeviceShadow{
-		DeviceID: device.ID,
-		Version:  1,
-	}
-	db.Create(&shadow)
+	// 记录操作日志
+	logDeviceOperation(device.ID, device.TenantID, "info", "设备创建成功", "device", device.IPAddress, "")
 	
 	c.JSON(201, gin.H{"code": 0, "data": device})
 }
@@ -322,8 +284,14 @@ func enableDevice(c *gin.Context) {
 		return
 	}
 	
+	now := time.Now()
 	device.Status = "online"
+	device.Online = true
+	device.LastOnlineAt = &now
 	db.Save(&device)
+	
+	logDeviceOperation(device.ID, device.TenantID, "info", "设备已启用", "device", "", "")
+	
 	c.JSON(200, gin.H{"code": 0, "message": "设备已启用"})
 }
 
@@ -334,8 +302,12 @@ func disableDevice(c *gin.Context) {
 		return
 	}
 	
+	now := time.Now()
 	device.Status = "offline"
+	device.Online = false
+	device.LastOfflineAt = &now
 	db.Save(&device)
+	
 	c.JSON(200, gin.H{"code": 0, "message": "设备已禁用"})
 }
 
@@ -348,6 +320,7 @@ func resetDevice(c *gin.Context) {
 	
 	device.DeviceSecret = generateDeviceSecret()
 	db.Save(&device)
+	
 	c.JSON(200, gin.H{"code": 0, "message": "设备已重置", "data": device})
 }
 
@@ -375,8 +348,8 @@ func createVirtualDevice(c *gin.Context) {
 		ProductID:       req.ProductID,
 		ProductKey:      productKey,
 		TenantID:        req.TenantID,
-		Status:          "offline",
-		Online:          true, // 虚拟设备默认在线
+		Status:          "online",
+		Online:          true,
 		Description:     req.Description,
 		IsVirtual:       true,
 		VirtualInterval: 60,
@@ -388,72 +361,6 @@ func createVirtualDevice(c *gin.Context) {
 	}
 	
 	c.JSON(201, gin.H{"code": 0, "data": device})
-}
-
-func reportVirtualProperty(c *gin.Context) {
-	deviceID := c.Param("id")
-	
-	var device Device
-	if err := db.First(&device, deviceID).Error; err != nil {
-		c.JSON(404, gin.H{"code": 404, "message": "设备不存在"})
-		return
-	}
-	
-	if !device.IsVirtual {
-		c.JSON(400, gin.H{"code": 400, "message": "不是虚拟设备"})
-		return
-	}
-	
-	// 模拟属性上报
-	var req struct {
-		Identify string  `json:"identify"`
-		Value    float64 `json:"value"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
-		return
-	}
-	
-	// 更新影子
-	shadow := DeviceShadow{
-		DeviceID: device.ID,
-		Reported: fmt.Sprintf(`{"%s":%f}`, req.Identify, req.Value),
-		Version:  1,
-	}
-	db.Where("device_id = ?", deviceID).FirstOrCreate(&shadow)
-	db.Model(&shadow).Updates(map[string]interface{}{
-		"reported": shadow.Reported,
-		"version":  shadow.Version + 1,
-		"updated_at": time.Now(),
-	})
-	
-	c.JSON(200, gin.H{"code": 0, "message": "属性上报成功"})
-}
-
-func triggerVirtualEvent(c *gin.Context) {
-	deviceID := c.Param("id")
-	
-	var device Device
-	if err := db.First(&device, deviceID).Error; err != nil {
-		c.JSON(404, gin.H{"code": 404, "message": "设备不存在"})
-		return
-	}
-	
-	if !device.IsVirtual {
-		c.JSON(400, gin.H{"code": 400, "message": "不是虚拟设备"})
-		return
-	}
-	
-	var req struct {
-		Identify string `json:"identify"`
-		Level    string `json:"level"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
-		return
-	}
-	
-	c.JSON(200, gin.H{"code": 0, "message": fmt.Sprintf("事件触发成功: %s", req.Identify)})
 }
 
 func getVirtualDeviceList(c *gin.Context) {
@@ -492,6 +399,8 @@ func deviceAuth(c *gin.Context) {
 	device.IPAddress = c.ClientIP()
 	db.Save(&device)
 	
+	logDeviceOperation(device.ID, device.TenantID, "info", "设备认证成功", "auth", device.IPAddress, c.GetHeader("User-Agent"))
+	
 	c.JSON(200, gin.H{
 		"code": 0,
 		"message": "认证成功",
@@ -520,49 +429,6 @@ func getDeviceCredentials(c *gin.Context) {
 	})
 }
 
-// ========== 设备影子API ==========
-
-func getDeviceShadow(c *gin.Context) {
-	var shadow DeviceShadow
-	if err := db.Where("device_id = ?", c.Param("id")).First(&shadow).Error; err != nil {
-		c.JSON(404, gin.H{"code": 404, "message": "影子不存在"})
-		return
-	}
-	
-	c.JSON(200, gin.H{"code": 0, "data": shadow})
-}
-
-func updateDeviceShadow(c *gin.Context) {
-	var shadow DeviceShadow
-	if err := db.Where("device_id = ?", c.Param("id")).First(&shadow).Error; err != nil {
-		shadow = DeviceShadow{
-			DeviceID: uintStrToUint(c.Param("id")),
-			Version:  1,
-		}
-	}
-	
-	var req struct {
-		Reported string `json:"reported"`
-		Desired  string `json:"desired"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
-		return
-	}
-	
-	if req.Reported != "" {
-		shadow.Reported = req.Reported
-	}
-	if req.Desired != "" {
-		shadow.Desired = req.Desired
-	}
-	shadow.Version++
-	shadow.UpdatedAt = time.Now()
-	
-	db.Save(&shadow)
-	c.JSON(200, gin.H{"code": 0, "data": shadow})
-}
-
 // ========== 设备统计API ==========
 
 func getDeviceStatistics(c *gin.Context) {
@@ -581,164 +447,81 @@ func getDeviceStatistics(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "data": stats})
 }
 
+// ========== 设备日志API ==========
+
 func getDeviceLogs(c *gin.Context) {
-	logs := []map[string]string{
-		{"time": time.Now().Add(-1 * time.Hour).Format(time.RFC3339), "level": "INFO", "msg": "设备上线"},
-		{"time": time.Now().Add(-30 * time.Minute).Format(time.RFC3339), "level": "INFO", "msg": "属性上报: temperature=25.5"},
-		{"time": time.Now().Add(-15 * time.Minute).Format(time.RFC3339), "level": "WARN", "msg": "信号强度较弱"},
-		{"time": time.Now().Add(-5 * time.Minute).Format(time.RFC3339), "level": "INFO", "msg": "固件版本检查"},
-	}
+	deviceID := c.Param("id")
 	
-	c.JSON(200, gin.H{"code": 0, "data": logs})
-}
-
-// ========== 设备分组API ==========
-
-func getDeviceGroups(c *gin.Context) {
-	var groups []DeviceGroup
-	db.Where("tenant_id = 1").Order("id ASC").Find(&groups)
-	c.JSON(200, gin.H{"code": 0, "data": groups})
-}
-
-func createDeviceGroup(c *gin.Context) {
-	var req CreateGroupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
-		return
-	}
-	
-	group := DeviceGroup{
-		Name:     req.Name,
-		ParentID: req.ParentID,
-		TenantID: 1,
-	}
-	
-	if err := db.Create(&group).Error; err != nil {
-		c.JSON(500, gin.H{"code": 500, "message": err.Error()})
-		return
-	}
-	
-	c.JSON(201, gin.H{"code": 0, "data": group})
-}
-
-func updateDeviceGroup(c *gin.Context) {
-	var group DeviceGroup
-	if err := db.First(&group, c.Param("id")).Error; err != nil {
-		c.JSON(404, gin.H{"code": 404, "message": "分组不存在"})
-		return
-	}
-	
-	var req CreateGroupRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
-		return
-	}
-	
-	group.Name = req.Name
-	group.ParentID = req.ParentID
-	db.Save(&group)
-	
-	c.JSON(200, gin.H{"code": 0, "data": group})
-}
-
-func deleteDeviceGroup(c *gin.Context) {
-	var group DeviceGroup
-	if err := db.First(&group, c.Param("id")).Error; err != nil {
-		c.JSON(404, gin.H{"code": 404, "message": "分组不存在"})
-		return
-	}
-	
-	db.Delete(&group)
-	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
-}
-
-func addDeviceToGroup(c *gin.Context) {
-	groupID := uintStrToUint(c.Param("id"))
-	deviceID := uintStrToUint(c.Param("device_id"))
-	
-	db.Model(&Device{}).Where("id = ?", deviceID).Update("group_id", groupID)
-	
-	c.JSON(200, gin.H{"code": 0, "message": "添加成功"})
-}
-
-func removeDeviceFromGroup(c *gin.Context) {
-	deviceID := uintStrToUint(c.Param("device_id"))
-	
-	db.Model(&Device{}).Where("id = ?", deviceID).Update("group_id", 0)
-	
-	c.JSON(200, gin.H{"code": 0, "message": "移除成功"})
-}
-
-// ========== 激活码API ==========
-
-func getActivationCodes(c *gin.Context) {
-	var codes []ActivationCode
+	var logs []DeviceLog
 	var total int64
 	
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
 	
-	db.Model(&ActivationCode{}).Count(&total)
-	db.Offset((page-1)*pageSize).Limit(pageSize).Find(&codes)
+	db.Model(&DeviceLog{}).Where("device_id = ?", deviceID).Count(&total)
+	db.Where("device_id = ?", deviceID).Order("created_at DESC").Offset((page-1)*pageSize).Limit(pageSize).Find(&logs)
 	
 	c.JSON(200, gin.H{
 		"code": 0,
-		"data": codes,
+		"data": logs,
 		"pagination": gin.H{
-			"page": page,
-			"size": pageSize,
+			"page":  page,
+			"size":  pageSize,
 			"total": total,
 		},
 	})
 }
 
-func generateActivationCodes(c *gin.Context) {
+func createDeviceLog(c *gin.Context) {
 	var req struct {
-		ProductID uint `json:"product_id" binding:"required"`
-		Count     int  `json:"count" binding:"required,min=1,max=10000"`
+		DeviceID  uint   `json:"device_id" binding:"required"`
+		TenantID  uint   `json:"tenant_id"`
+		Level     string `json:"level" binding:"required"`
+		Message   string `json:"message" binding:"required"`
+		Module    string `json:"module"`
+		IPAddress string `json:"ip_address"`
+		UserAgent string `json:"user_agent"`
 	}
+	
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
 		return
 	}
 	
-	var productKey string
-	db.Raw("SELECT product_key FROM products WHERE id = ?", req.ProductID).Scan(&productKey)
-	if productKey == "" {
-		c.JSON(404, gin.H{"code": 404, "message": "产品不存在"})
-		return
+	log := DeviceLog{
+		DeviceID:   req.DeviceID,
+		TenantID:   req.TenantID,
+		Level:      req.Level,
+		Message:    req.Message,
+		Module:     req.Module,
+		IPAddress:  req.IPAddress,
+		UserAgent:  req.UserAgent,
+		CreatedAt:  time.Now(),
 	}
 	
-	var codes []ActivationCode
-	for i := 0; i < req.Count; i++ {
-		code := ActivationCode{
-			ProductID: req.ProductID,
-			Code:      generateCode(),
-			Status:    "unused",
-		}
-		codes = append(codes, code)
-	}
-	
-	if err := db.Create(&codes).Error; err != nil {
+	if err := db.Create(&log).Error; err != nil {
 		c.JSON(500, gin.H{"code": 500, "message": err.Error()})
 		return
 	}
 	
-	c.JSON(201, gin.H{"code": 0, "message": fmt.Sprintf("成功生成 %d 个激活码", len(codes))})
-}
-
-func deleteActivationCode(c *gin.Context) {
-	var code ActivationCode
-	if err := db.First(&code, c.Param("id")).Error; err != nil {
-		c.JSON(404, gin.H{"code": 404, "message": "激活码不存在"})
-		return
-	}
-	
-	db.Delete(&code)
-	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+	c.JSON(201, gin.H{"code": 0, "data": log})
 }
 
 // ========== 工具函数 ==========
+
+func logDeviceOperation(deviceID uint, tenantID uint, level, message, module, ip, ua string) {
+	entry := DeviceLog{
+		DeviceID:  deviceID,
+		TenantID:  tenantID,
+		Level:     level,
+		Message:   message,
+		Module:    module,
+		IPAddress: ip,
+		UserAgent: ua,
+		CreatedAt: time.Now(),
+	}
+	db.Create(&entry)
+}
 
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok {
@@ -758,18 +541,4 @@ func generateDeviceKey() string {
 
 func generateDeviceSecret() string {
 	return fmt.Sprintf("%064x", time.Now().UnixNano())
-}
-
-func generateCode() string {
-	return fmt.Sprintf("%08x%04x%04x%04x%012x", 
-		os.Getpid(), 
-		time.Now().UnixNano(), 
-		time.Now().UnixNano(), 
-		time.Now().UnixNano(), 
-		time.Now().UnixNano())
-}
-
-func uintStrToUint(s string) uint {
-	n, _ := strconv.ParseUint(s, 10, 32)
-	return uint(n)
 }

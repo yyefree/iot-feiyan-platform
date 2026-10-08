@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -139,7 +141,7 @@ type ParamDef struct {
 var db *gorm.DB
 
 func initDB() {
-	host := getEnv("POSTGRES_HOST", "iot-postgres")
+	host := getEnv("POSTGRES_HOST", "localhost")
 	port := getEnv("POSTGRES_PORT", "5432")
 	user := getEnv("POSTGRES_USER", "iot_admin")
 	password := getEnv("POSTGRES_PASSWORD", "iot_admin_2024")
@@ -149,7 +151,13 @@ func initDB() {
 	var err error
 	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatal("failed to connect database:", err)
+		log.Printf("WARNING: failed to connect database: %v", err)
+		// 尝试docker容器名
+		dsn = fmt.Sprintf("host=iot-postgres port=%s user=%s password=%s dbname=%s sslmode=disable", port, user, password, dbname)
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		if err != nil {
+			log.Fatal("failed to connect database:", err)
+		}
 	}
 
 	db.AutoMigrate(&Product{}, &ThingModelDefine{}, &TSLVersion{})
@@ -193,8 +201,20 @@ func main() {
 	r.PUT("/api/v1/products/:id/events/:eid", updateEvent)
 	r.DELETE("/api/v1/products/:id/events/:eid", deleteEvent)
 
-	log.Printf("product-service starting on :8082")
-	r.Run(":8082")
+	// 运行在8082端口
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8082"
+	}
+	addr := fmt.Sprintf(":%s", port)
+	log.Printf("product-service starting on %s", addr)
+	
+	if err := r.Run(addr); err != nil {
+		log.Printf("Failed to start on %s, trying :8095", addr)
+		if err := r.Run(":8095"); err != nil {
+			log.Fatal("failed to start server:", err)
+		}
+	}
 }
 
 // ========== 产品相关处理函数 ==========
@@ -325,9 +345,19 @@ func importTSL(c *gin.Context) {
 		return
 	}
 
+	// 解析并验证TSL数据
+	var tslData map[string]interface{}
+	if err := json.Unmarshal([]byte(req.TSLData), &tslData); err != nil {
+		c.JSON(400, gin.H{"code": 400, "message": "TSL数据格式错误: " + err.Error()})
+		return
+	}
+
 	// 保存TSL数据
 	product.ThingModel = req.TSLData
 	db.Save(&product)
+
+	// 解析并保存物模型定义
+	saveTSLDefinitions(productID, tslData)
 
 	// 保存版本历史
 	version := TSLVersion{
@@ -339,6 +369,83 @@ func importTSL(c *gin.Context) {
 	db.Create(&version)
 
 	c.JSON(200, gin.H{"code": 0, "message": "TSL导入成功"})
+}
+
+func saveTSLDefinitions(productID string, tslData map[string]interface{}) {
+	// 清除旧的定义
+	db.Where("product_id = ?", uintStrToUint(productID)).Delete(&ThingModelDefine{})
+
+	// 保存属性
+	if properties, ok := tslData["properties"].([]interface{}); ok {
+		for _, prop := range properties {
+			if propMap, ok := prop.(map[string]interface{}); ok {
+				define := ThingModelDefine{
+					ProductID:  uintStrToUint(productID),
+					DefineType: "property",
+					Identifier: getStringValue(propMap, "identifier"),
+					Name:       getStringValue(propMap, "name"),
+					Desc:       getStringValue(propMap, "desc"),
+					AccessMode: getStringValue(propMap, "accessMode"),
+					Type:       getStringValue(propMap, "type"),
+					Unit:       getStringValue(propMap, "unit"),
+					UnitSymbol: getStringValue(propMap, "unitSymbol"),
+				}
+				if v, ok := propMap["minValue"].(float64); ok {
+					define.MinValue = &v
+				}
+				if v, ok := propMap["maxValue"].(float64); ok {
+					define.MaxValue = &v
+				}
+				if v, ok := propMap["step"].(float64); ok {
+					define.Step = &v
+				}
+				db.Create(&define)
+			}
+		}
+	}
+
+	// 保存服务
+	if services, ok := tslData["services"].([]interface{}); ok {
+		for _, svc := range services {
+			if svcMap, ok := svc.(map[string]interface{}); ok {
+				define := ThingModelDefine{
+					ProductID:  uintStrToUint(productID),
+					DefineType: "service",
+					Identifier: getStringValue(svcMap, "identifier"),
+					Name:       getStringValue(svcMap, "name"),
+					Desc:       getStringValue(svcMap, "desc"),
+					InputParams: getStringValue(svcMap, "inputParams"),
+					OutputParams: getStringValue(svcMap, "outputParams"),
+				}
+				db.Create(&define)
+			}
+		}
+	}
+
+	// 保存事件
+	if events, ok := tslData["events"].([]interface{}); ok {
+		for _, evt := range events {
+			if evtMap, ok := evt.(map[string]interface{}); ok {
+				define := ThingModelDefine{
+					ProductID:  uintStrToUint(productID),
+					DefineType: "event",
+					Identifier: getStringValue(evtMap, "identifier"),
+					Name:       getStringValue(evtMap, "name"),
+					Desc:       getStringValue(evtMap, "desc"),
+					Level:      getStringValue(evtMap, "level"),
+					OutputParams: getStringValue(evtMap, "outputParams"),
+				}
+				db.Create(&define)
+			}
+		}
+	}
+}
+
+func getStringValue(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 func exportTSL(c *gin.Context) {

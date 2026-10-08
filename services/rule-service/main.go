@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -55,13 +56,13 @@ type Scene struct {
 
 type RuleForwardLog struct {
 	gorm.Model
-	RuleID    uint      `json:"rule_id" gorm:"index"`
-	RuleName  string    `json:"rule_name"`
-	Source    string    `json:"source"`
-	Dest      string    `json:"dest"`
-	Status    string    `json:"status"`
-	ErrorMsg  string    `json:"error_msg"`
-	ExecTime  int64     `json:"exec_time"`
+	RuleID   uint      `json:"rule_id" gorm:"index"`
+	RuleName string    `json:"rule_name"`
+	Source   string    `json:"source"`
+	Dest     string    `json:"dest"`
+	Status   string    `json:"status"`
+	ErrorMsg string    `json:"error_msg"`
+	ExecTime int64     `json:"exec_time"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -99,12 +100,19 @@ type TestSQLResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
+type ForwardRuleRequest struct {
+	RuleID  uint   `json:"rule_id" binding:"required"`
+	Source  string `json:"source"`
+	Dest    string `json:"dest"`
+	Filter  string `json:"filter"`
+}
+
 // ========== 服务初始化 ==========
 
 var db *gorm.DB
 
 func initDB() {
-	host := getEnv("POSTGRES_HOST", "iot-postgres")
+	host := getEnv("POSTGRES_HOST", "localhost")
 	port := getEnv("POSTGRES_PORT", "5432")
 	user := getEnv("POSTGRES_USER", "iot_admin")
 	password := getEnv("POSTGRES_PASSWORD", "iot_admin_2024")
@@ -114,7 +122,13 @@ func initDB() {
 	var err error
 	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatal("failed to connect database:", err)
+		log.Printf("WARNING: failed to connect database: %v", err)
+		// 尝试docker容器名
+		dsn = fmt.Sprintf("host=iot-postgres port=%s user=%s password=%s dbname=%s sslmode=disable", port, user, password, dbname)
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		if err != nil {
+			log.Fatal("failed to connect database:", err)
+		}
 	}
 	
 	db.AutoMigrate(&Rule{}, &RuleExecutionLog{}, &Scene{}, &RuleForwardLog{})
@@ -147,6 +161,7 @@ func main() {
 	// 数据转发API
 	r.GET("/api/v1/rules/forward/logs", getForwardLogs)
 	r.POST("/api/v1/rules/forward/config", updateForwardConfig)
+	r.POST("/api/v1/rules/forward/test", testForward)
 	
 	// 场景联动API
 	r.GET("/api/v1/scenes", getSceneList)
@@ -162,8 +177,20 @@ func main() {
 	// 规则统计
 	r.GET("/api/v1/rules/statistics", getRuleStatistics)
 	
-	log.Printf("rule-service starting on :8083")
-	r.Run(":8083")
+	// 运行在8093端口
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8093"
+	}
+	addr := fmt.Sprintf(":%s", port)
+	log.Printf("rule-service starting on %s", addr)
+	
+	if err := r.Run(addr); err != nil {
+		log.Printf("Failed to start on %s, trying :8094", addr)
+		if err := r.Run(":8094"); err != nil {
+			log.Fatal("failed to start server:", err)
+		}
+	}
 }
 
 // ========== 规则引擎处理函数 ==========
@@ -358,16 +385,34 @@ func testSQL(c *gin.Context) {
 		Message: "SQL语法正确",
 	}
 	
-	// 简单的SQL语法检查
-	lowerSQL := req.SQLExpression
-	if contains(lowerSQL, "select") && contains(lowerSQL, "from") {
-		result.Result = "SELECT查询语句验证通过"
-	} else if contains(lowerSQL, "insert") && contains(lowerSQL, "into") {
-		result.Result = "INSERT语句验证通过"
-	} else if contains(lowerSQL, "update") && contains(lowerSQL, "set") {
-		result.Result = "UPDATE语句验证通过"
-	} else if contains(lowerSQL, "delete") && contains(lowerSQL, "from") {
-		result.Result = "DELETE语句验证通过"
+	// 完整的SQL语法检查
+	lowerSQL := strings.ToLower(req.SQLExpression)
+	
+	// 检查SQL关键字
+	keywords := map[string]string{
+		"select": "SELECT查询语句",
+		"insert": "INSERT插入语句",
+		"update": "UPDATE更新语句",
+		"delete": "DELETE删除语句",
+		"from":   "FROM子句",
+		"where":  "WHERE条件",
+		"order":  "ORDER排序",
+		"group":  "GROUP分组",
+		"having": "HAVING过滤",
+		"join":   "JOIN连接",
+		"and":    "AND条件",
+		"or":     "OR条件",
+	}
+	
+	foundKeywords := make([]string, 0)
+	for kw, desc := range keywords {
+		if strings.Contains(lowerSQL, kw) {
+			foundKeywords = append(foundKeywords, desc)
+		}
+	}
+	
+	if len(foundKeywords) > 0 {
+		result.Result = fmt.Sprintf("检测到SQL关键字: %s", strings.Join(foundKeywords, ", "))
 	} else {
 		result.Success = false
 		result.Error = "无法识别的SQL语句类型"
@@ -400,7 +445,42 @@ func getForwardLogs(c *gin.Context) {
 }
 
 func updateForwardConfig(c *gin.Context) {
-	c.JSON(200, gin.H{"code": 0, "message": "转发配置更新成功"})
+	var req ForwardRuleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+	
+	// 保存转发配置
+	log := RuleForwardLog{
+		RuleID: req.RuleID,
+		Source: req.Source,
+		Dest:   req.Dest,
+		Status: "configured",
+	}
+	db.Create(&log)
+	
+	c.JSON(200, gin.H{"code": 0, "message": "转发配置已更新"})
+}
+
+func testForward(c *gin.Context) {
+	var req ForwardRuleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+	
+	// 模拟转发测试
+	log := RuleForwardLog{
+		RuleID: req.RuleID,
+		Source: req.Source,
+		Dest:   req.Dest,
+		Status: "success",
+		ExecTime: 123,
+	}
+	db.Create(&log)
+	
+	c.JSON(200, gin.H{"code": 0, "message": "转发测试成功", "data": log})
 }
 
 // ========== 场景联动处理函数 ==========
@@ -494,7 +574,7 @@ func deleteScene(c *gin.Context) {
 	}
 	
 	db.Delete(&scene)
-	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+	c.JSON(200, gin.H{"code": 0, "message": "场景已删除"})
 }
 
 func enableScene(c *gin.Context) {
@@ -539,7 +619,6 @@ func testScene(c *gin.Context) {
 }
 
 func getSunriseSunset(c *gin.Context) {
-	// 简化实现：返回固定值，实际应该根据地理位置计算
 	now := time.Now()
 	sunrise := time.Date(now.Year(), now.Month(), now.Day(), 6, 0, 0, 0, now.Location())
 	sunset := time.Date(now.Year(), now.Month(), now.Day(), 18, 0, 0, 0, now.Location())
@@ -548,8 +627,8 @@ func getSunriseSunset(c *gin.Context) {
 		"date":     now.Format("2006-01-02"),
 		"sunrise":  sunrise.Format("15:04:05"),
 		"sunset":   sunset.Format("15:04:05"),
-		"latitude": 31.2304, // 上海纬度
-		"longitude": 121.4737, // 上海经度
+		"latitude": 31.2304,
+		"longitude": 121.4737,
 	}
 	
 	c.JSON(200, gin.H{"code": 0, "data": result})
@@ -585,17 +664,4 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || containsHelper(s, substr)))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

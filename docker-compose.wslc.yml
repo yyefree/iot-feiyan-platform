@@ -89,8 +89,8 @@ services:
   
   api-gateway:
     build:
-      context: ./rust-services/gateway
-      dockerfile: Dockerfile
+      context: ./rust-services
+      dockerfile: gateway/Dockerfile
     container_name: iot-api-gateway
     restart: unless-stopped
     ports:
@@ -112,8 +112,8 @@ services:
 
   device-service:
     build:
-      context: ./rust-services/device-service
-      dockerfile: Dockerfile
+      context: ./rust-services
+      dockerfile: device-service/Dockerfile
     container_name: iot-device-service
     restart: unless-stopped
     ports:
@@ -135,8 +135,8 @@ services:
 
   product-service:
     build:
-      context: ./rust-services/product-service
-      dockerfile: Dockerfile
+      context: ./rust-services
+      dockerfile: product-service/Dockerfile
     container_name: iot-product-service
     restart: unless-stopped
     ports:
@@ -158,8 +158,8 @@ services:
 
   rule-service:
     build:
-      context: ./rust-services/rule-service
-      dockerfile: Dockerfile
+      context: ./rust-services
+      dockerfile: rule-service/Dockerfile
     container_name: iot-rule-service
     restart: unless-stopped
     ports:
@@ -181,8 +181,8 @@ services:
 
   data-service:
     build:
-      context: ./rust-services/data-service
-      dockerfile: Dockerfile
+      context: ./rust-services
+      dockerfile: data-service/Dockerfile
     container_name: iot-data-service
     restart: unless-stopped
     ports:
@@ -208,8 +208,8 @@ services:
 
   ops-service:
     build:
-      context: ./rust-services/ops-service
-      dockerfile: Dockerfile
+      context: ./rust-services
+      dockerfile: ops-service/Dockerfile
     container_name: iot-ops-service
     restart: unless-stopped
     ports:
@@ -239,6 +239,77 @@ services:
       - "3000:80"
     depends_on:
       - api-gateway
+    networks:
+      - iot-network
+
+  # ========== Go 附加服务 ==========
+
+  ota-service:
+    build:
+      context: ./services/ota-service
+      dockerfile: Dockerfile
+    container_name: iot-ota-service
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8088
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  voice-service:
+    build:
+      context: ./services/voice-service
+      dockerfile: Dockerfile
+    container_name: iot-voice-service
+    restart: unless-stopped
+    ports:
+      - "8089:8089"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8089
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - iot-network
+
+  rule-service-extensions:
+    build:
+      context: ./services/rule-service-extensions
+      dockerfile: Dockerfile
+    container_name: iot-rule-extensions
+    restart: unless-stopped
+    ports:
+      - "8094:8094"
+    environment:
+      - POSTGRES_HOST=iot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=iot_platform
+      - POSTGRES_USER=iot_admin
+      - POSTGRES_PASSWORD=iot_admin_2024
+      - DATABASE_URL=postgres://iot_admin:iot_admin_2024@iot-postgres:5432/iot_platform
+      - HOST=0.0.0.0
+      - PORT=8094
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - iot-network
 
