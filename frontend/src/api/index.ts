@@ -258,9 +258,6 @@ export function getLatestTelemetry(deviceId: number) {
   return request({ url: `/data/telemetry/device/${deviceId}/latest`, method: 'get' })
 }
 
-export function getDeviceStatistics(deviceId: number) {
-  return request({ url: `/data/telemetry/device/${deviceId}/stats`, method: 'get' })
-}
 
 export function getLatestProperties(params?: Record<string, any>) {
   return request({ url: '/data/properties', method: 'get', params })

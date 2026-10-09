@@ -67,7 +67,7 @@ const loadData = async () => {
   loading.value = true
   try {
     const res: any = await getProjectList()
-    projects.value = res.content || []
+    projects.value = res.data || []
   } finally {
     loading.value = false
   }

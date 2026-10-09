@@ -84,7 +84,7 @@ const loadBindings = async () => {
   loading.value = true
   try {
     const res: any = await getVoiceBindList()
-    bindings.value = res.content || []
+    bindings.value = res.data || []
   } finally {
     loading.value = false
   }
@@ -93,7 +93,7 @@ const loadBindings = async () => {
 const loadProducts = async () => {
   try {
     const res: any = await getProductList({ page: 1, size: 100 })
-    products.value = res.content || []
+    products.value = res.data || []
   } catch (e) {
     console.error('Failed to load products', e)
   }

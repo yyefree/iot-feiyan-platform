@@ -149,7 +149,7 @@ const loadFirmwares = async () => {
   loading.value = true
   try {
     const res: any = await getFirmwareList()
-    firmwares.value = res.content || []
+    firmwares.value = res.data || []
   } finally {
     loading.value = false
   }
@@ -159,7 +159,7 @@ const loadTasks = async () => {
   loading.value = true
   try {
     const res: any = await getTaskList()
-    tasks.value = res.content || []
+    tasks.value = res.data || []
   } finally {
     loading.value = false
   }

@@ -73,7 +73,7 @@ const loadData = async () => {
   loading.value = true
   try {
     const res: any = await getVoiceMappingList()
-    mappings.value = res.content || []
+    mappings.value = res.data || []
   } finally {
     loading.value = false
   }

@@ -90,7 +90,7 @@ const loadData = async () => {
   loading.value = true
   try {
     const res: any = await getFirmwareList()
-    firmwares.value = res.content || []
+    firmwares.value = res.data || []
   } finally {
     loading.value = false
   }
@@ -99,7 +99,7 @@ const loadData = async () => {
 const loadProducts = async () => {
   try {
     const res: any = await getProductList({ page: 1, size: 100 })
-    products.value = res.content || []
+    products.value = res.data || []
   } catch (e) {
     console.error('Failed to load products', e)
   }

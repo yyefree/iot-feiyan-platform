@@ -67,8 +67,8 @@ const loadData = async () => {
   loading.value = true
   try {
     const res: any = await getProductList({ page: pagination.value.page, size: pagination.value.size })
-    tableData.value = res.content || []
-    pagination.value.total = res.totalElements || 0
+    tableData.value = res.data || []
+    pagination.value.total = res.pagination?.total || res.data.length
   } finally { loading.value = false }
 }
 

@@ -105,7 +105,7 @@ const loadScenes = async () => {
   loading.value = true
   try {
     const res: any = await getSceneList({ page: 1, size: 50 })
-    scenes.value = res.content || []
+    scenes.value = res.data || []
   } finally {
     loading.value = false
   }

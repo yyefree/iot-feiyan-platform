@@ -134,8 +134,8 @@ const loadData = async () => {
       productId: searchForm.value.productId,
       status: searchForm.value.status
     })
-    tableData.value = res.content || []
-    pagination.value.total = res.totalElements || 0
+    tableData.value = res.data || []
+    pagination.value.total = res.pagination?.total || res.data.length
   } finally {
     loading.value = false
   }
@@ -150,7 +150,7 @@ const resetSearch = () => {
 const loadProducts = async () => {
   try {
     const res: any = await getProductList({ page: 1, size: 100 })
-    products.value = res.content || []
+    products.value = res.data || []
   } catch (e) {
     console.error('Failed to load products', e)
   }

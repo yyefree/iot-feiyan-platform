@@ -54,7 +54,7 @@ const loadData = async () => {
   loading.value = true
   try {
     const res: any = await getRuleList({ page: 1, size: 50 })
-    rules.value = res.content || []
+    rules.value = res.data || []
   } finally { loading.value = false }
 }
 

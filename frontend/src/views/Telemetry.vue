@@ -95,8 +95,8 @@ const loadData = async () => {
     }
     
     const res: any = await getTelemetryData(params)
-    telemetryData.value = res.content || []
-    pagination.value.total = res.totalElements || 0
+    telemetryData.value = res.data || []
+    pagination.value.total = res.pagination?.total || 0
     
     if (telemetryData.value.length > 0) {
       loadChart()
@@ -145,7 +145,7 @@ const exportData = () => {
 const loadDevices = async () => {
   try {
     const res: any = await getDeviceList({ page: 1, size: 100 })
-    devices.value = res.content || []
+    devices.value = res.data || []
   } catch (e) {
     console.error('Failed to load devices', e)
   }

@@ -114,8 +114,8 @@ const loadData = async () => {
     }
     
     const res: any = await getLogList(params)
-    logs.value = res.content || []
-    pagination.value.total = res.totalElements || 0
+    logs.value = res.data || []
+    pagination.value.total = res.pagination?.total || 0
   } catch (e: any) {
     ElMessage.error(e.message || '查询失败')
   } finally {
@@ -126,7 +126,7 @@ const loadData = async () => {
 const loadDevices = async () => {
   try {
     const res: any = await getDeviceList({ page: 1, size: 100 })
-    devices.value = res.content || []
+    devices.value = res.data || []
   } catch (e) {
     console.error('Failed to load devices', e)
   }

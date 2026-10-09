@@ -93,9 +93,9 @@ const loadData = async () => {
     if (res.data && Array.isArray(res.data)) {
       tableData.value = res.data
       pagination.value.total = res.pagination?.total || res.data.length
-    } else if (res.content) {
-      tableData.value = res.content
-      pagination.value.total = res.totalElements || 0
+    } else if (res.data) {
+      tableData.value = res.data
+      pagination.value.total = res.pagination?.total || 0
     } else {
       tableData.value = []
       pagination.value.total = 0

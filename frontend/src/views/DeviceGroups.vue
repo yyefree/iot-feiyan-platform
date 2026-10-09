@@ -105,7 +105,7 @@ const loadGroups = async () => {
   loading.value = true
   try {
     const res: any = await getGroupList()
-    groups.value = res.content || []
+    groups.value = res.data || []
     // 构建父分组名称映射
     groups.value.forEach(g => {
       if (g.parent_id) {
@@ -178,7 +178,7 @@ const loadDevices = async () => {
   deviceLoading.value = true
   try {
     const res: any = await getDeviceList({ page: 1, size: 100 })
-    devices.value = res.content || []
+    devices.value = res.data || []
   } finally {
     deviceLoading.value = false
   }
